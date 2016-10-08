@@ -10,6 +10,12 @@ uint32_t find_memmove(uint32_t region, uint8_t* kdata, size_t ksize);
 // Use for write-anywhere gadget.
 uint32_t find_str_r1_r2_bx_lr(uint32_t region, uint8_t* kdata, size_t ksize);
 
+// Helper gadget.
+uint32_t find_mov_r0_r1_bx_lr(uint32_t region, uint8_t* kdata, size_t ksize);
+
+// Use for read-anywhere gadget.
+uint32_t find_ldr_r0_r1_bx_lr(uint32_t region, uint8_t* kdata, size_t ksize);
+
 // Helper gadget for changing page tables / patching.
 uint32_t find_flush_dcache(uint32_t region, uint8_t* kdata, size_t ksize);
 
@@ -21,6 +27,9 @@ uint32_t find_pmap_location(uint32_t region, uint8_t* kdata, size_t ksize);
 
 // Write 0 here.
 uint32_t find_proc_enforce(uint32_t region, uint8_t* kdata, size_t ksize);
+
+// Write 0 here.
+uint32_t find_vnode_enforce(uint32_t region, uint8_t* kdata, size_t ksize);
 
 // Write 1 here.
 uint32_t find_cs_enforcement_disable_amfi(uint32_t region, uint8_t* kdata, size_t ksize);
@@ -57,14 +66,34 @@ uint32_t find_memcmp(uint32_t region, uint8_t* kdata, size_t ksize);
 // Dereference this, add 0x38 to the resulting pointer, and write whatever boot-args are suitable to affect kern.bootargs.
 uint32_t find_p_bootargs(uint32_t region, uint8_t* kdata, size_t ksize);
 
+// Function to find the syscall 0 function pointer. Used to modify the syscall table to call our own code.
+uint32_t find_syscall0(uint32_t region, uint8_t* kdata, size_t ksize);
+
+// If you want get root with setreuid() syscall...
+uint32_t find_setreuid(uint32_t region, uint8_t* kdata, size_t ksize);
+uint32_t find_setreuid_84(uint32_t region, uint8_t* kdata, size_t ksize);
+
+// Function to copy strings to the kernel
+uint32_t find_copyinstr(uint32_t region, uint8_t* kdata, size_t ksize);
+
+// No ideas...
+uint32_t find_csops(uint32_t region, uint8_t* kdata, size_t ksize);
+uint32_t find_csops2(uint32_t region, uint8_t* kdata, size_t ksize);
+
+// dunno
+uint32_t find_mem_func(uint32_t region, uint8_t* kdata, size_t ksize);
+
+// NOP out the conditional branch here (prevent kIOReturnLockedWrite error).
+uint32_t find_mapForIO(uint32_t region, uint8_t* kdata, size_t ksize);
+
+// NOP out the BL call here.
+uint32_t find_sandbox_call_i_can_has_debugger(uint32_t region, uint8_t* kdata, size_t ksize);
+
 // This gets the zone_page_table array in osfmk/kern/zalloc.c. Useful for diagnosing problems with the zone allocator.
 uint32_t find_zone_page_table(uint32_t region, uint8_t* kdata, size_t ksize);
 
 // Function to free leaked ipc_kmsg objects
 uint32_t find_ipc_kmsg_destroy(uint32_t region, uint8_t* kdata, size_t ksize);
-
-// Function to find the syscall 0 function pointer. Used to modify the syscall table to call our own code.
-uint32_t find_syscall0(uint32_t region, uint8_t* kdata, size_t ksize);
 
 // Function used to free any dead ports we find to clean up after memory leak.
 uint32_t find_io_free(uint32_t region, uint8_t* kdata, size_t ksize);
