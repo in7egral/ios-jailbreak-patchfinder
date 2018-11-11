@@ -101,7 +101,7 @@ static int insn_ldr_literal_rt(uint16_t* i)
 static int insn_ldr_literal_imm(uint16_t* i)
 {
     if((*i & 0xF800) == 0x4800)
-        return (*i & 0xF) << 2;
+        return (*i & 0xFF) << 2;
     else if((*i & 0xFF7F) == 0xF85F)
         return (*(i + 1) & 0xFFF) * (((*i & 0x0800) == 0x0800) ? 1 : -1);
     else
