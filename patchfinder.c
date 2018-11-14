@@ -570,7 +570,12 @@ static uint16_t* find_literal_ref(uint32_t region, uint8_t* kdata, size_t ksize,
             }
         } else if(insn_is_movt(current_instruction))
         {
-            value[insn_movt_rd(current_instruction)] |= insn_movt_imm(current_instruction) << 16;
+            int reg = insn_movt_rd(current_instruction);
+            value[reg] |= insn_movt_imm(current_instruction) << 16;
+            if(value[reg] == address)
+            {
+                return current_instruction;
+            }
         } else if(insn_is_add_reg(current_instruction))
         {
             int reg = insn_add_reg_rd(current_instruction);
